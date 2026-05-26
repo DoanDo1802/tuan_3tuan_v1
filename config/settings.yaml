@@ -1,0 +1,84 @@
+mqtt:
+  broker: 192.168.1.250
+  port: 1883
+  username: atin
+  password: team1@123#
+  keepalive: 60
+  client_id_prefix: ai_engine
+  qos:
+    cameras: 1
+    zones: 1
+    bbox: 0
+
+company:
+  id: 10
+  ai_module: FOOTFALL
+
+camera:
+  # Mã camera local AI sẽ chạy. PHẢI là duy nhất trong hệ thống để tránh xung đột.
+  code: Demo01
+  # Bỏ trống để lấy RTSP từ camera discovery; điền vào để override khi test.
+  rtsp_override: ""
+
+topics:
+  cameras: smart_vms/cameras/company/{company_id}
+  zones: smart_vms/cameras/{camera_code}/zones
+  bbox: smart_vms/ai/bbox/{camera_code}
+
+models:
+  vehicle_weights: models/yolov8n.pt
+  plate_weights: models/best.pt
+  device: cuda:0           # 'cuda:0' trên server, 'cpu' khi dev
+  vehicle_conf: 0.35
+  plate_conf: 0.25
+  vehicle_iou: 0.5
+  plate_iou: 0.45
+  # COCO class id của xe trong YOLOv8: car=2, motorcycle=3, bus=5, truck=7
+  vehicle_classes: [2, 3, 5, 7]
+  vehicle_class_names:
+    2: car
+    3: motorcycle
+    5: bus
+    7: truck
+  imgsz_vehicle: 640
+  imgsz_plate: 320
+
+tracker:
+  # ultralytics builtin: bytetrack.yaml | botsort.yaml
+  type: bytetrack.yaml
+  ocr_cooldown_seconds: 3.0   # mỗi track_id chỉ OCR lại sau khoảng này
+  track_buffer_seconds: 5.0   # giữ track_state khi mất track tạm thời
+
+ocr:
+  enabled: true
+  lang: en
+  use_gpu: true
+  det: false
+  rec: true
+  cls: false
+  min_confidence: 0.5
+  min_plate_height_px: 16
+  max_queue_size: 8
+
+video:
+  use_gstreamer: true
+  # Pipeline GStreamer chuẩn cho RTSP H264 (sử dụng software decode để cross-platform).
+  # Trên server NVIDIA, có thể đổi avdec_h264 -> nvh264dec để dùng NVDEC.
+  pipeline_template: >
+    rtspsrc location={url} latency=0 drop-on-latency=true !
+    rtph264depay ! h264parse ! avdec_h264 !
+    videoconvert ! video/x-raw,format=BGR !
+    appsink sync=false max-buffers=1 drop=true
+  reconnect_seconds: 3
+  frame_queue_size: 4
+  read_timeout_seconds: 5
+  target_fps: 0   # 0 = không giới hạn
+
+publish:
+  detection_queue_size: 32
+  publish_interval_seconds: 0.04   # ~25fps tối đa
+  include_plate_when_unknown: true
+
+logging:
+  level: INFO
+  fmt: "%(asctime)s %(levelname)s %(name)s :: %(message)s"

@@ -1,0 +1,17 @@
+# MQTT
+paho-mqtt>=1.6.1,<2.0.0
+
+# Computer vision / video IO
+opencv-python>=4.8.0
+numpy>=1.24.0,<2.0.0
+
+# YOLO (vehicle + plate detection + built-in ByteTrack)
+ultralytics>=8.2.0
+
+# License plate OCR (Phase 3 - optional but enabled in config)
+# Install paddlepaddle-gpu separately to match the CUDA toolkit on the server.
+paddleocr>=2.7.0
+# paddlepaddle-gpu  # install via the official wheel matching CUDA on the server
+
+# Config & utils
+PyYAML>=6.0
