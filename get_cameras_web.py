@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-import requests
 import json
+import os
+
+import requests
 import urllib3
+
+from src.config_loader import load_dotenv
+
+load_dotenv()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 URL = "https://atin-aitech.com:60443"
 LOGIN_URL = f"{URL}/api/v1/user-management/auth/login"
 CAMERAS_URL = f"{URL}/api/v1/cameras"
 
-USERNAME = "tts_q2"
-PASSWORD = "admin123"
+USERNAME = os.environ.get("WEB_USERNAME", "")
+PASSWORD = os.environ.get("WEB_PASSWORD", "")
 
 def main():
     session = requests.Session()

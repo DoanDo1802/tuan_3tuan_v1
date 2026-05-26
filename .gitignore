@@ -1,0 +1,11 @@
+# Local OS/cache files
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local deployment/config overrides
+deploy.sh.local
+config/settings.yaml
+*.local
+.env
+.env.*

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -77,9 +78,22 @@ class Config:
         return self.topics.get("bbox", "").format(camera_code=code)
 
 
+def load_dotenv(path: str = ".env") -> None:
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+
+
 def load_config(path: str) -> Config:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Config file not found: {path}")
+    load_dotenv()
     with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+        raw = yaml.safe_load(os.path.expandvars(f.read())) or {}
     return Config(raw=raw)

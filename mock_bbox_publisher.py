@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import threading
 import time
@@ -10,12 +11,15 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 
+from src.config_loader import load_dotenv
+
+load_dotenv()
 
 MQTT_CONFIG = {
-    "broker": "192.168.1.250",
-    "port": 1883,
-    "username": "atin",
-    "password": "team1@123#",
+    "broker": os.environ.get("MQTT_BROKER", ""),
+    "port": int(os.environ.get("MQTT_PORT", "1883")),
+    "username": os.environ.get("MQTT_USERNAME", ""),
+    "password": os.environ.get("MQTT_PASSWORD", ""),
     "company_id": 10,
     "ai_module": "FACE",
     "cameras_topic": "smart_vms/cameras/company/10",
