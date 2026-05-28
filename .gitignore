@@ -8,4 +8,5 @@ deploy.sh.local
 *.local
 .env
 .env.*
+!.env.example
 .venv
