@@ -3,8 +3,7 @@
 __pycache__/
 *.py[cod]
 
-# Local deployment/config overrides
-deploy.sh.local
+# Local config overrides
 *.local
 .env
 .env.*
