@@ -2,16 +2,53 @@
 paho-mqtt>=1.6.1,<2.0.0
 
 # Computer vision / video IO
-opencv-python>=4.8.0
-numpy>=1.24.0,<2.0.0
+# OpenCV (qt6 build từ conda-forge) — chỉ dùng cho image ops (crop/resize).
+# RTSP decode KHÔNG đi qua cv2; dùng GStreamer trực tiếp qua PyGObject.
+# Conda setup (chạy trên server, không cần sudo):
+#   conda install -n py311 -c conda-forge -y \
+#       "opencv=4.13.0=qt6_py311*" \
+#       "libopencv=4.13.0=qt6_py311*" \
+#       "py-opencv=4.13.0=qt6_py311*" \
+#       pygobject gst-python gstreamer \
+#       gst-plugins-base gst-plugins-good gst-plugins-bad \
+#       gst-plugins-ugly gst-libav
+# Verify GStreamer Python binding:
+#   python -c "import gi; gi.require_version('Gst','1.0'); \
+#              from gi.repository import Gst; Gst.init(None); print(Gst.version())"
+# opencv-python>=4.8.0,<4.12.0   # disabled — dùng conda OpenCV
+numpy==1.26.4  # boxmot hard-pin, không thể đổi
 
-# YOLO (vehicle + plate detection + built-in ByteTrack)
-ultralytics>=8.2.0
+# PyTorch stack — pin trước để resolver không phải dò.
+# Cặp tương thích boxmot 12.x: torch 2.2.x + torchvision 0.17.x.
+# Wheel torch/torchvision 2.2/0.17 chỉ có cho Python 3.8–3.11.
+# Nếu server đang dùng Python 3.12+ thì cần dùng boxmot 11.x ở dưới.
+torch>=2.2.0,<2.3.0
+torchvision>=0.17.0,<0.18.0
 
-# License plate OCR (Phase 3 - optional but enabled in config)
-# Install paddlepaddle-gpu separately to match the CUDA toolkit on the server.
-paddleocr>=2.7.0
-# paddlepaddle-gpu  # install via the official wheel matching CUDA on the server
+# YOLO (vehicle + plate detection)
+ultralytics>=8.3.40,<8.4.0
+
+# OC-SORT tracker (via boxmot). Pulls in lap/lapx automatically.
+# boxmot 12.x: numpy==1.26.4, torch 2.2.x, torchvision 0.17.x, ultralytics 8.3.x.
+boxmot>=12.0.0,<13.0.0
+# Nếu Python >= 3.12 và không downgrade được, đổi boxmot sang 11.0.x
+# và bỏ pin torch/torchvision ở trên (boxmot 11 nới hơn).
+# boxmot>=11.0.5,<12.0.0
 
 # Config & utils
 PyYAML>=6.0
+
+# License plate OCR (Phase 3)
+# IMPORTANT: OpenCV MUST be installed via conda-forge FIRST (not pip).
+# On server BEFORE pip install -r requirements.txt:
+#   conda install -c conda-forge -y \
+#     "opencv=4.13.0=qt6_py311*" \
+#     "libopencv=4.13.0=qt6_py311*" \
+#     "py-opencv=4.13.0=qt6_py311*"
+# Then paddleocr will find the conda OpenCV and avoid pip opencv-python conflict.
+paddleocr>=2.7.0
+# paddlepaddle-gpu  # Optional: install manually if CUDA optimization needed
+
+# setuptools 81+ đã xoá `pkg_resources`; boxmot.utils.checks vẫn import nó.
+# Pin xuống <81 để tránh ModuleNotFoundError khi boxmot khởi tạo.
+setuptools<81

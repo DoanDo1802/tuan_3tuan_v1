@@ -1,10 +1,15 @@
-"""Detection dataclass + per-track state manager (OCR cooldown, cached text)."""
+"""Detection dataclass, per-track state manager and OC-SORT tracker wrapper."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from ..utils.geometry import bbox_xyxy_to_normalized
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -81,3 +86,107 @@ class TrackStateManager:
                 self._last_seen.pop(tid, None)
                 self._last_ocr_ts.pop(tid, None)
                 self._text_cache.pop(tid, None)
+
+
+
+class OcSortTracker:
+    """OC-SORT tracker wrapper using boxmot.
+
+    Takes raw Detection objects from VehicleDetector, returns the same list but
+    with assigned ``track_id``. Detections that the tracker drops (low confidence,
+    failed association) are filtered out.
+    """
+
+    def __init__(self, tracker_cfg: dict[str, Any]):
+        import numpy as np
+
+        try:
+            from boxmot import OcSort as _OcSort  # type: ignore
+        except ImportError:
+            try:
+                from boxmot.trackers.ocsort.ocsort import OcSort as _OcSort  # type: ignore  # noqa: F401
+            except ImportError:
+                try:
+                    from boxmot.trackers.ocsort.ocsort import OCSORT as _OcSort  # type: ignore
+                except ImportError as exc:
+                    raise ImportError(
+                        "boxmot not installed. Run: pip install boxmot"
+                    ) from exc
+
+        self._np = np
+        params = tracker_cfg.get("ocsort", {}) or {}
+        kwargs = dict(
+            det_thresh=float(params.get("det_thresh", 0.3)),
+            max_age=int(params.get("max_age", 30)),
+            min_hits=int(params.get("min_hits", 3)),
+            asso_threshold=float(params.get("asso_threshold", 0.3)),
+            delta_t=int(params.get("delta_t", 3)),
+            asso_func=str(params.get("asso_func", "iou")),
+            inertia=float(params.get("inertia", 0.2)),
+            use_byte=bool(params.get("use_byte", False)),
+        )
+        try:
+            self._tracker = _OcSort(**kwargs)
+        except TypeError:
+            # Older API uses iou_threshold instead of asso_threshold
+            kwargs["iou_threshold"] = kwargs.pop("asso_threshold")
+            self._tracker = _OcSort(**kwargs)
+        log.info("OC-SORT tracker initialised: %s", kwargs)
+
+    def update(self, detections: list[Detection], frame) -> list[Detection]:
+        np = self._np
+        h, w = frame.shape[:2]
+        if not detections:
+            try:
+                self._tracker.update(np.empty((0, 6)), frame)
+            except Exception:
+                pass
+            return []
+        dets_arr = np.array(
+            [[*d.bbox_xyxy, d.confidence, d.class_id] for d in detections],
+            dtype=np.float32,
+        )
+        try:
+            tracks = self._tracker.update(dets_arr, frame)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("OC-SORT update error: %s", exc)
+            return []
+        if tracks is None or len(tracks) == 0:
+            return []
+        tracks = np.asarray(tracks)
+        result: list[Detection] = []
+        for row in tracks:
+            if len(row) < 5:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in row[0:4])
+            tid = int(row[4])
+            conf = float(row[5]) if len(row) > 5 else 0.0
+            cls = int(row[6]) if len(row) > 6 else -1
+            det_idx = int(row[7]) if len(row) > 7 and not np.isnan(row[7]) else -1
+
+            class_name = "vehicle"
+            if 0 <= det_idx < len(detections):
+                src = detections[det_idx]
+                class_name = src.class_name
+                if cls < 0:
+                    cls = src.class_id
+                if conf <= 0.0:
+                    conf = src.confidence
+            else:
+                for src in detections:
+                    if src.class_id == cls:
+                        class_name = src.class_name
+                        break
+
+            bbox = [x1, y1, x2, y2]
+            result.append(
+                Detection(
+                    track_id=tid,
+                    class_id=cls if cls >= 0 else 0,
+                    class_name=class_name,
+                    confidence=conf,
+                    bbox_xyxy=bbox,
+                    bbox_norm=bbox_xyxy_to_normalized(bbox, w, h),
+                )
+            )
+        return result

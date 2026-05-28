@@ -1,4 +1,4 @@
-"""RTSP decode thread using GStreamer (preferred) with OpenCV fallback."""
+"""RTSP decode thread using native GStreamer via PyGObject (no OpenCV)."""
 from __future__ import annotations
 
 import logging
@@ -7,41 +7,77 @@ import threading
 import time
 from typing import Any
 
-import cv2
+import gi
+import numpy as np
+
+gi.require_version("Gst", "1.0")
+from gi.repository import Gst  # noqa: E402
 
 log = logging.getLogger(__name__)
 
+_GST_INIT_LOCK = threading.Lock()
+_GST_INITIALISED = False
 
-def _build_gst_pipeline(template: str, url: str) -> str:
+
+def _ensure_gst_init() -> None:
+    global _GST_INITIALISED
+    with _GST_INIT_LOCK:
+        if not _GST_INITIALISED:
+            Gst.init(None)
+            _GST_INITIALISED = True
+
+
+def _build_pipeline_str(template: str, url: str) -> str:
     pipe = template.format(url=url)
-    return " ".join(pipe.split())
+    pipe = " ".join(pipe.split())
+    if "appsink" in pipe and "name=" not in pipe.split("appsink", 1)[1].split("!")[0]:
+        pipe = pipe.replace("appsink", "appsink name=sink", 1)
+    return pipe
 
 
-def _open_capture(url: str, cfg: dict[str, Any]) -> cv2.VideoCapture:
-    use_gst = bool(cfg.get("use_gstreamer", True))
-    if use_gst:
-        pipe = _build_gst_pipeline(cfg.get("pipeline_template", ""), url)
-        cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
-        if cap.isOpened():
-            log.info("Opened RTSP via GStreamer pipeline")
-            return cap
-        log.warning("GStreamer pipeline failed, falling back to OpenCV FFMPEG backend")
-        try:
-            cap.release()
-        except Exception:
-            pass
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    if cap.isOpened():
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        log.info("Opened RTSP via OpenCV/FFMPEG backend")
-    return cap
+def _sample_to_ndarray(sample):
+    buf = sample.get_buffer()
+    caps = sample.get_caps()
+    if buf is None or caps is None:
+        return None
+    structure = caps.get_structure(0)
+    ok_w, width = structure.get_int("width")
+    ok_h, height = structure.get_int("height")
+    if not (ok_w and ok_h):
+        return None
+    success, map_info = buf.map(Gst.MapFlags.READ)
+    if not success:
+        return None
+    try:
+        data_size = map_info.size
+        tight = width * height * 3
+        if data_size == tight:
+            # No stride padding — fast path.
+            frame = np.ndarray(
+                shape=(height, width, 3),
+                dtype=np.uint8,
+                buffer=map_info.data,
+            ).copy()
+        else:
+            # Buffer is row-padded. Stride = data_size / height, strip the padding.
+            if data_size % height != 0:
+                return None
+            stride = data_size // height
+            if stride < width * 3:
+                return None
+            padded = np.ndarray(
+                shape=(height, stride),
+                dtype=np.uint8,
+                buffer=map_info.data,
+            )
+            frame = padded[:, : width * 3].reshape(height, width, 3).copy()
+    finally:
+        buf.unmap(map_info)
+    return frame
 
 
 class VideoDecoder(threading.Thread):
-    """Thread 1: read frames from RTSP and push to a frame queue.
-
-    Drops old frames (queue size 1) to keep the pipeline real-time.
-    """
+    """Thread 1: pull frames from a GStreamer pipeline and push to a queue."""
 
     def __init__(
         self,
@@ -54,54 +90,89 @@ class VideoDecoder(threading.Thread):
         self._url = url
         self._cfg = video_cfg
         self._queue = frame_queue
-        self._stop = stop_event
+        # NOTE: phải đặt tên KHÁC `_stop` vì Thread có private method Thread._stop()
+        # — nếu shadow sẽ break Thread.is_alive()/join() ở Python 3.11+.
+        self._stop_event = stop_event
         self._frame_count = 0
         self._last_frame_ts = 0.0
         self._target_fps = float(video_cfg.get("target_fps", 0) or 0)
         self._min_interval = 1.0 / self._target_fps if self._target_fps > 0 else 0.0
         self._read_timeout = float(video_cfg.get("read_timeout_seconds", 5.0))
         self._reconnect = float(video_cfg.get("reconnect_seconds", 3.0))
+        _ensure_gst_init()
 
     @property
     def frame_count(self) -> int:
         return self._frame_count
 
+    def _open_pipeline(self):
+        pipe_str = _build_pipeline_str(self._cfg.get("pipeline_template", ""), self._url)
+        log.info("Launching GStreamer pipeline: %s", pipe_str)
+        try:
+            pipeline = Gst.parse_launch(pipe_str)
+        except Exception as exc:
+            log.error("Failed to parse GStreamer pipeline: %s", exc)
+            return None
+        sink = pipeline.get_by_name("sink")
+        if sink is None:
+            log.error("appsink 'sink' not found in pipeline")
+            pipeline.set_state(Gst.State.NULL)
+            return None
+        ret = pipeline.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            log.error("Failed to set pipeline to PLAYING")
+            pipeline.set_state(Gst.State.NULL)
+            return None
+        return pipeline, sink
+
+    def _drain_bus(self, pipeline) -> bool:
+        bus = pipeline.get_bus()
+        msg = bus.pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
+        if msg is None:
+            return True
+        if msg.type == Gst.MessageType.ERROR:
+            err, debug = msg.parse_error()
+            log.warning("GStreamer error: %s (%s)", err, debug)
+        else:
+            log.info("GStreamer EOS")
+        return False
+
     def run(self) -> None:
         log.info("VideoDecoder starting url=%s", self._url)
-        while not self._stop.is_set():
-            cap = _open_capture(self._url, self._cfg)
-            if not cap.isOpened():
-                log.warning("Cannot open stream, retrying in %ss", self._reconnect)
-                if self._stop.wait(self._reconnect):
+        timeout_ns = int(0.2 * Gst.SECOND)
+        while not self._stop_event.is_set():
+            opened = self._open_pipeline()
+            if opened is None:
+                if self._stop_event.wait(self._reconnect):
                     break
                 continue
+            pipeline, sink = opened
             last_ok = time.time()
-            while not self._stop.is_set():
-                ok, frame = cap.read()
+            while not self._stop_event.is_set():
+                if not self._drain_bus(pipeline):
+                    break
+                sample = sink.emit("try-pull-sample", timeout_ns)
                 now = time.time()
-                if not ok or frame is None:
+                if sample is None:
                     if now - last_ok > self._read_timeout:
                         log.warning("Read timeout, reconnecting")
                         break
-                    if self._stop.wait(0.02):
-                        break
+                    continue
+                frame = _sample_to_ndarray(sample)
+                if frame is None:
                     continue
                 last_ok = now
                 if self._min_interval and (now - self._last_frame_ts) < self._min_interval:
                     continue
                 self._push(frame, now)
-            try:
-                cap.release()
-            except Exception:
-                pass
-            if not self._stop.is_set():
+            pipeline.set_state(Gst.State.NULL)
+            if not self._stop_event.is_set():
                 log.info("Reconnecting in %ss", self._reconnect)
-                if self._stop.wait(self._reconnect):
+                if self._stop_event.wait(self._reconnect):
                     break
         log.info("VideoDecoder stopped (frames=%d)", self._frame_count)
 
     def _push(self, frame, ts: float) -> None:
-        # Always keep only the latest frame to avoid backlog.
         try:
             self._queue.put_nowait((ts, frame))
         except queue.Full:

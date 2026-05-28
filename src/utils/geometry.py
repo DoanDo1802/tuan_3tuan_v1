@@ -69,3 +69,27 @@ def any_polygon_contains(
     if not polygons:
         return True
     return any(point_in_polygon(x, y, poly) for poly in polygons)
+
+
+def polygon_pixel_bounding_rect(
+    polygon_norm: Sequence[Sequence[float]],
+    frame_w: int,
+    frame_h: int,
+    padding: int = 0,
+) -> tuple[int, int, int, int]:
+    """Compute pixel bounding rect of a normalized polygon, expanded by ``padding``.
+
+    Returns ``(x1, y1, x2, y2)`` clamped to frame bounds. Falls back to the full
+    frame when the polygon is empty or invalid.
+    """
+    if not polygon_norm or frame_w <= 0 or frame_h <= 0:
+        return (0, 0, frame_w, frame_h)
+    xs = [p[0] * frame_w for p in polygon_norm]
+    ys = [p[1] * frame_h for p in polygon_norm]
+    x1 = max(0, int(min(xs)) - padding)
+    y1 = max(0, int(min(ys)) - padding)
+    x2 = min(frame_w, int(max(xs)) + padding)
+    y2 = min(frame_h, int(max(ys)) + padding)
+    if x2 <= x1 or y2 <= y1:
+        return (0, 0, frame_w, frame_h)
+    return (x1, y1, x2, y2)

@@ -12,11 +12,11 @@ mqtt:
 
 company:
   id: 10
-  ai_module: FOOTFALL
+  ai_module: FACE
 
 camera:
   # Mã camera local AI sẽ chạy. PHẢI là duy nhất trong hệ thống để tránh xung đột.
-  code: Demo01
+  code: 1
   # Bỏ trống để lấy RTSP từ camera discovery; điền vào để override khi test.
   rtsp_override: ""
 
@@ -30,27 +30,39 @@ models:
   plate_weights: models/best.pt
   device: cuda:0           # 'cuda:0' trên server, 'cpu' khi dev
   vehicle_conf: 0.35
-  plate_conf: 0.25
-  vehicle_iou: 0.5
+  # Hạ thấp vì xe ở xa → biển số chỉ 10-20px, model dễ miss.
+  plate_conf: 0.10
+  vehicle_iou: 0.45
   plate_iou: 0.45
   # COCO class id của xe trong YOLOv8: car=2, motorcycle=3, bus=5, truck=7
   vehicle_classes: [2, 3, 5, 7]
   vehicle_class_names:
     2: car
     3: motorcycle
-    # 5: bus
-    # 7: truck
+    5: bus
+    7: truck
   imgsz_vehicle: 640
-  imgsz_plate: 320
+  # Tăng để upscale vehicle ROI nhỏ → biển số có đủ pixel cho YOLO.
+  imgsz_plate: 640
 
 tracker:
-  # ultralytics builtin: bytetrack.yaml | botsort.yaml
-  type: bytetrack.yaml
-  ocr_cooldown_seconds: 3.0   # mỗi track_id chỉ OCR lại sau khoảng này
-  track_buffer_seconds: 5.0   # giữ track_state khi mất track tạm thời
+  # OC-SORT (Observation-Centric SORT) qua thư viện boxmot.
+  type: ocsort
+  ocsort:
+    det_thresh: 0.3            # bỏ detection có conf thấp hơn ngưỡng này
+    max_age: 30                # số frame giữ track khi mất detection
+    min_hits: 1                # hiện track ngay từ frame đầu (3 = chờ 3 frame trước khi vẽ bbox)
+    asso_threshold: 0.3        # ngưỡng IoU để match track <-> detection
+    delta_t: 3                 # bước thời gian cho velocity estimate
+    asso_func: iou             # iou | giou | ciou | diou
+    inertia: 0.2               # trọng số velocity trong association
+    use_byte: false            # bật ByteTrack-style low-conf recovery
+  ocr_cooldown_seconds: 3.0    # mỗi track_id chỉ OCR lại sau khoảng này
+  track_buffer_seconds: 5.0    # giữ track_state khi mất track tạm thời
 
 ocr:
-  enabled: true
+  # Enable plate text recognition via PaddleOCR
+  enabled: false
   lang: en
   use_gpu: true
   det: false
@@ -61,9 +73,11 @@ ocr:
   max_queue_size: 8
 
 video:
+  # Decoder dùng GStreamer trực tiếp qua PyGObject (gi.repository.Gst).
+  # Flag này hiện chỉ giữ để tương thích ngược; module luôn dùng GStreamer.
   use_gstreamer: true
-  # Pipeline GStreamer chuẩn cho RTSP H264 (sử dụng software decode để cross-platform).
-  # Trên server NVIDIA, có thể đổi avdec_h264 -> nvh264dec để dùng NVDEC.
+  # Pipeline GStreamer chuẩn cho RTSP H264 (software decode, cross-platform).
+  # Trên server NVIDIA có thể đổi avdec_h264 -> nvh264dec để dùng NVDEC.
   pipeline_template: >
     rtspsrc location={url} latency=0 drop-on-latency=true !
     rtph264depay ! h264parse ! avdec_h264 !
@@ -76,8 +90,16 @@ video:
 
 publish:
   detection_queue_size: 32
-  publish_interval_seconds: 0.04   # ~25fps tối đa
+  publish_interval_seconds: 0.02    # publish ngay, không throttle (giảm latency)
   include_plate_when_unknown: true
+
+zone_filter:
+  # true  = crop frame theo bounding rect của polygon trước khi detect
+  #         -> input nhỏ hơn, xe trong zone chiếm tỉ lệ lớn hơn -> detect chuẩn hơn
+  # false = detect toàn frame, lọc point-in-polygon sau (hành vi cũ)
+  crop_before_detect: true
+  crop_padding_pixels: 30                  # buffer mở rộng quanh polygon để xe rìa không bị cắt
+  fallback_full_frame_if_no_zone: true     # khi chưa nhận được zone, detect toàn frame
 
 logging:
   level: INFO

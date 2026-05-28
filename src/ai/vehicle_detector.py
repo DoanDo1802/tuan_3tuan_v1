@@ -1,4 +1,4 @@
-"""Vehicle detection + tracking using ultralytics YOLO + built-in ByteTrack."""
+"""Phase 1 — vehicle detection using ultralytics YOLO (no built-in tracking)."""
 from __future__ import annotations
 
 import logging
@@ -11,9 +11,9 @@ log = logging.getLogger(__name__)
 
 
 class VehicleDetector:
-    """Phase 1 — detect & track vehicles."""
+    """Detect-only wrapper around YOLO. Track IDs are assigned externally by OcSortTracker."""
 
-    def __init__(self, models_cfg: dict[str, Any], tracker_cfg: dict[str, Any]):
+    def __init__(self, models_cfg: dict[str, Any]):
         from ultralytics import YOLO  # local import so tests don't need GPU
 
         self._weights = models_cfg.get("vehicle_weights", "yolov8n.pt")
@@ -23,21 +23,18 @@ class VehicleDetector:
         self._imgsz = int(models_cfg.get("imgsz_vehicle", 640))
         self._classes = list(models_cfg.get("vehicle_classes", [2, 3, 5, 7]))
         self._class_names = {int(k): str(v) for k, v in (models_cfg.get("vehicle_class_names") or {}).items()}
-        self._tracker_yaml = str(tracker_cfg.get("type", "bytetrack.yaml"))
         log.info("Loading YOLO vehicle weights=%s device=%s", self._weights, self._device)
         self._model = YOLO(self._weights)
 
-    def track(self, frame, frame_w: int, frame_h: int) -> list[Detection]:
-        """Run detection + tracking. Returns list[Detection] (with track_id)."""
-        results = self._model.track(
+    def detect(self, frame, frame_w: int, frame_h: int) -> list[Detection]:
+        """Run detection only. Returns list[Detection] with track_id=-1 (unassigned)."""
+        results = self._model.predict(
             frame,
-            persist=True,
             conf=self._conf,
             iou=self._iou,
             imgsz=self._imgsz,
             classes=self._classes,
             device=self._device,
-            tracker=self._tracker_yaml,
             verbose=False,
         )
         detections: list[Detection] = []
@@ -50,17 +47,12 @@ class VehicleDetector:
         xyxy = boxes.xyxy.cpu().numpy().tolist()
         confs = boxes.conf.cpu().numpy().tolist() if boxes.conf is not None else [0.0] * len(xyxy)
         clss = boxes.cls.cpu().numpy().tolist() if boxes.cls is not None else [0] * len(xyxy)
-        ids = (
-            boxes.id.cpu().numpy().astype(int).tolist()
-            if getattr(boxes, "id", None) is not None
-            else [-1] * len(xyxy)
-        )
         for i, box in enumerate(xyxy):
             class_id = int(clss[i])
             name = self._class_names.get(class_id) or self._model.names.get(class_id, str(class_id))
             detections.append(
                 Detection(
-                    track_id=int(ids[i]) if i < len(ids) else -1,
+                    track_id=-1,
                     class_id=class_id,
                     class_name=str(name),
                     confidence=float(confs[i]) if i < len(confs) else 0.0,

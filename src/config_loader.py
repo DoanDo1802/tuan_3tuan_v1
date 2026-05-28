@@ -59,6 +59,10 @@ class Config:
         return self.raw.get("publish", {})
 
     @property
+    def zone_filter(self) -> dict[str, Any]:
+        return self.raw.get("zone_filter", {})
+
+    @property
     def logging(self) -> dict[str, Any]:
         return self.raw.get("logging", {})
 

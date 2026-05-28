@@ -201,14 +201,18 @@ def load_polygons(cfg: dict[str, Any], timeout: float = 5.0) -> dict[str, list[d
 
 
 def fake_bbox_message(camera_code: str, ai_module: str) -> dict[str, Any]:
+    ts = time.time()
     return {
         "camera_code": camera_code,
         "ai_module": ai_module,
         "ai_modules": [ai_module],
-        "timestamp": time.time(),
+        "timestamp": ts,
+        "frame_ts": ts,
+        "publish_ts": ts,
+        "pipeline_latency_ms": 0.0,
         "detections": [
             {
-                "id": "obj_mock_1",
+                "id": "car_track_1",
                 "cls": "car",
                 "class": "car",
                 "label": "car",
@@ -216,6 +220,16 @@ def fake_bbox_message(camera_code: str, ai_module: str) -> dict[str, Any]:
                 "confidence": 0.95,
                 "bbox": [0.35, 0.35, 0.65, 0.75],
                 "color": "#00ff00",
+            },
+            {
+                "id": "plate_track_1",
+                "cls": "plate",
+                "class": "plate",
+                "label": "plate",
+                "confidence": 0.92,
+                "bbox": [0.40, 0.60, 0.60, 0.70],
+                "text": "59H78899",
+                "color": "#ffff00",
             }
         ],
     }

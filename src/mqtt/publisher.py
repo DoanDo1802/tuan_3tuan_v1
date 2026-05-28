@@ -28,7 +28,8 @@ class BboxPublisher(threading.Thread):
         self._cfg = mqtt_cfg
         self._topic = topic
         self._queue = publish_queue
-        self._stop = stop_event
+        # Tránh shadow Thread._stop() (private method của threading.Thread).
+        self._stop_event = stop_event
         self._interval = max(0.0, float(publish_interval))
         self._qos = int(mqtt_cfg.get("qos", {}).get("bbox", 0))
         self._client = None
@@ -44,15 +45,22 @@ class BboxPublisher(threading.Thread):
         mqtt_client.connect_loop(self._client, self._cfg)
         log.info("Publisher ready on topic=%s qos=%s", self._topic, self._qos)
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 try:
                     payload = self._queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                # Drain backlog → publish payload mới nhất, bỏ payload cũ
+                # để tránh hiển thị bbox của frame quá khứ.
+                while True:
+                    try:
+                        payload = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
                 now = time.time()
                 wait = self._interval - (now - self._last_publish_ts)
                 if wait > 0:
-                    if self._stop.wait(wait):
+                    if self._stop_event.wait(wait):
                         break
                 self._publish(payload)
                 self._last_publish_ts = time.time()

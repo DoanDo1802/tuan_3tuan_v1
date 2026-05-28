@@ -5,7 +5,7 @@ __pycache__/
 
 # Local deployment/config overrides
 deploy.sh.local
-config/settings.yaml
 *.local
 .env
 .env.*
+.venv
